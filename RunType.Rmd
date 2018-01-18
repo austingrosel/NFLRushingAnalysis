@@ -1,0 +1,265 @@
+---
+title: "NFL Rushes by Formation/Direction"
+output: 
+  html_document:
+    theme: flatly
+    highlight: textmate
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Recently, I was watching an NFL game with my totally real, not make-belief girlfriend. A team was trying to convert a first down on 3rd and 1, and they brought their jumbo personnel in. They snapped the ball, the QB pivoted, handed the ball off to his running back, who went straight into the gap of the center and guard and got stuffed for no gain. Now it was fourth down, and the punt team was trotting out.
+
+"That was stupid." my girlfriend said, who while being incredibly smart and playing sports all her life, did not grow up watching much American football, preferring soccer instead.
+
+Me, being more adverse in random NFL stuff like 3rd down statistics asked, "Why? It's more successful than passing in that situation."
+
+"It just seems like everyone knew they were going to run it up the middle," she replied.
+
+This was an interesting point. Is it more successful to run on 3rd downs because many analyses classify QB scrambles as runs? Should an offense bring out their passing game personnel to fool a defense? Is it really inefficient to run up the middle? All of these questions can be answered using play-by-play data!
+
+As of 2016, Dennis Erny at Armchair Analysis (<http://armchairanalysis.com/>) has been charting team's formation personnel for each play and rush play direction. Using these two factors, I wanted to see which run plays were the most efficient and succesful depending on different situations. 
+
+
+```{r libraries, echo = FALSE, include=FALSE}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+```
+
+To start, I imported the play-by-play data (play), the formation data (chart), and player information (player), and merged these together.
+
+```{r, message = FALSE, cache = TRUE}
+play <- read_csv("~/Desktop/nfl_00-16/PBP.csv")
+chart <- read_csv("~/Desktop/nfl_00-16/CHART.csv")
+player <- read_csv("~/Desktop/Football/nfl_00-16/PLAYER.csv")
+
+plays = merge(play[,c(1:28)], chart, by = "pid")
+plays = merge(plays, player[,c(1,5)], by.x = "bc", by.y = "player")
+```
+
+My first task was to format the formation data correctly. In the NFL, a formation is classified by a number, with the tens digit holding the number of running backs and the ones digit accounting for the number of tight ends. I also cropped the data to include only rushing plays and removed any plays that had "scramble" in their play-by-play detail. This isn't perfect because some details won't include this even on scrambles, but it's better than not addressing it at all.
+
+The table below shows the amount of rushing plays from each of the formation types.
+
+```{r}
+plays$form = plays$rb * 10 + plays$te
+run_plays_form = plays[plays$type == "RUSH" & is.na(plays$kne) & !grepl("scramble", plays$detail), ]
+run_plays_form$form = as.factor(run_plays_form$form)
+run_plays_form %>% group_by(form) %>% summarise(amt = n()) %>% arrange(-amt)
+```
+
+So there are 16 formation personnels on record last year. This seems like too many to choose from, especially when we start getting into specific situations and subsetting our data set even further. I'm going to bin these formations into a few different groups: Spread, Pro, Ace, Tight, and Misc.
+
+```{r formation/style setup}
+run_plays = plays[plays$type == "RUSH" & is.na(plays$kne) & (!grepl("scrambles", plays$detail) | !grepl("scramble", plays$detail)), ]
+run_plays$style = "Misc"
+run_plays$style = ifelse(as.numeric(run_plays$form) < 12, "Spread", run_plays$style)
+run_plays$style = ifelse(as.numeric(run_plays$form) == 12, "Ace", run_plays$style)
+run_plays$style = ifelse(as.numeric(run_plays$form) == 21, "Pro", run_plays$style)
+run_plays$style = ifelse((as.numeric(run_plays$form) > 21 | as.numeric(run_plays$form) == 13) & as.numeric(run_plays$form) != 30, "Tight", run_plays$style)
+run_plays$form = as.factor(run_plays$form)
+run_plays$style = as.factor(run_plays$style)
+```
+
+I also want to bin the directions, since I don't really care about left or right, so I took the direction variable down from RE, RT, RG, MD, LG, LT, LE to Inside, Tackle, and End. I also will be tracking if plays are in shotgun and if the play was successful or not. A success, according to Armchair Analysis, is when the offense gets 40% of the yards to go on 1st down, 60% of the yards to go on second down, and a first down on 3rd/4th down. Success percentage can tell us about consistency instead of something like yards per carry, which is biased to long gains or losses.
+
+```{r direction setup}
+run_plays$direction = "Inside"
+run_plays$direction = ifelse(run_plays$dir == "LT" | run_plays$dir == "RT", "Tackle", run_plays$direction)
+run_plays$direction = ifelse(run_plays$dir == "LE" | run_plays$dir == "RE", "End", run_plays$direction)
+
+run_plays$success = ifelse(is.na(run_plays$succ), 0, 1)
+run_plays$shotgun = ifelse(is.na(run_plays$sg), 0, 1)
+```
+
+## First Down Runs
+
+In the following tables, I made sure to remove runs from the QB just in case of scrambles. I realize this may remove a few designed runs from players like Cam Newton, but currently, I just want to see what successful plays happen from position players.
+
+```{r}
+run_dir = run_plays %>% group_by(direction) %>% filter(dwn == 1, ytg == 10, pos1 != "QB") %>% summarise(amt =  n(), ypc = mean(yds), succ = mean(success)) %>% arrange(-ypc)
+run_style = run_plays %>% group_by(style) %>% filter(dwn == 1, ytg == 10, pos1 != "QB") %>% summarise(amt = n(), ypc = mean(yds), succ = mean(success)) %>% arrange(-ypc)
+run_types = run_plays %>% group_by(style, direction) %>% filter(dwn == 1, ytg == 10, pos1 != "QB") %>% summarise(amt = n(), ypc = mean(yds), succ = mean(success)) %>% arrange(-ypc)
+```
+
+*Direction Table*
+```{r}
+knitr::kable(run_dir)
+```
+
+It looks like from the table above, on first down, outside runs were the most efficient (5.04 YPC) and successful (48.4% success rate). Already, it shows that running to the inside is the least efficient direction (4.07 YPC, 44.9% success rate). However, I think it's relatively fair to assume that running outside is has more loss of yards along with longer runs. Let's look at a density plot to see the comparisons.
+
+*Direction Density Plot*
+```{r, fig.align='center', warning=FALSE}
+ggplot(run_plays, aes(yds, fill = direction, colour = direction)) +
+  geom_density(alpha = 0.2) + xlim(-10, 40)
+```
+
+Yep, just as I suspected. We can see the density is higher on rushes less than zero yards and above seven yards. Since end runs have a larger standard deviation and less sample size, are we confident to say they're more efficient and successful than inside runs? Let's conduct a t-test to find out.
+
+*YPC T-test*
+
+```{r}
+t.test(run_plays[run_plays$direction == "End" & run_plays$dwn == 1 & run_plays$ytg == 10 & run_plays$pos1 != "QB",]$yds,
+       run_plays[run_plays$direction == "Inside" & run_plays$dwn == 1 & run_plays$ytg == 10 & run_plays$pos1 != "QB",]$yds, 
+       alternative="greater")
+```
+*Success T-test*
+
+```{r}
+t.test(run_plays[run_plays$direction == "End" & run_plays$dwn == 1 & run_plays$ytg == 10 & run_plays$pos1 != "QB",]$success,
+       run_plays[run_plays$direction == "Inside" & run_plays$dwn == 1 & run_plays$ytg == 10 & run_plays$pos1 != "QB",]$success, 
+       alternative = "greater")
+```
+
+Using an alpha = 0.05, we can reject the null hypothesis. Thus, we accept the alternative hypothesis that outside runs are more efficient (p = 1.79e-5) and successful than inside runs on first down (p = 0.01).
+
+Now let's look at the formation styles.
+
+*Style Table*
+```{r}
+knitr::kable(run_style)
+```
+
+Another hypothesis confirmed that using a formation to spread the field causes more efficient runs, even on first down. The "Misc" formation has the highest success rate but it has a relatively low sample size compared to the rest of the styles (only 1.9% of all first down runs). Finally, we want to observe grouping the runs by both the direction and style
+
+*Style/Direction Tables*
+```{r}
+knitr::kable(run_types)
+```
+
+The table above is already starting to have low samples for some of the formations, but we can see almost each formation produces a high YPC value when running to the ends. Interestingly enough, on a low sample, running to the outside in a tight situation gave us the highest YPC and **only** direction/style over 50% success rate. That's really interesting that on every other run on first down from another direction/style, there was a 50% chance or worse that four yards weren't picked up! For the next part, let's elminate some of the low sample situations to generlize better.
+
+*Filtered Style/Direction Table*
+```{r}
+run_types = run_plays %>% group_by(style, direction)  %>% filter(dwn == 1, ytg == 10, pos1 != "QB") %>% summarise(amt = n(), ypc = mean(yds), succ = mean(success)) %>% filter(amt > 200) %>% arrange(-ypc)
+knitr::kable(run_types)
+```
+
+That's better. Running outside from spread and ace formations have the highest YPC but are less consistent than running off tackle from the spread. What's interesting also is the amount of runs from the spread right up the middle and how much less efficient they are (almost a full yard per carry).
+
+What about running out of shotgun?
+
+*Shotgun Table*
+```{r}
+knitr::kable(run_plays %>% group_by(shotgun) %>% filter(dwn == 1, ytg == 10, pos1 != "QB") %>% summarise(amt = n(), ypc = mean(yds), succ = mean(success)) %>% filter(amt > 150) %>% arrange(-ypc))
+```
+
+In the table above, a 1 in the shotgun column marks if it was a shotgun formation. Here we see shotgun runs are generally more efficient than runs from under center. 
+
+The table below takes into account the formation and direction, along with shotgun, and we can see that in spread formations, running to the outside/tackles gets a > 5 YPC and a large sample containing a success rate of over 50%! Finally!
+
+*Shotgun + Direction/Style Table*
+```{r}
+knitr::kable(head(run_plays %>% group_by(shotgun, direction, style) %>% filter(dwn == 1, ytg == 10, pos1 != "QB") %>% summarise(amt = n(), ypc = mean(yds), succ = mean(success)) %>% filter(amt > 100, shotgun == 1) %>% arrange(-ypc)))
+```
+
+To wrap this analysis up, I wanted to make sure there's no game script effect, where a team is winning by so much that they run up the middle with a jumbo set to simply run out the clock, I I eliminated runs from the 4th quarter.
+
+*Non-4th Quarter runs*
+```{r}
+run_types = run_plays %>% group_by(style, direction)  %>% filter(dwn == 1, ytg == 10, pos1 != "QB", qtr != 4) %>% summarise(amt = n(), ypc = mean(yds), succ = mean(success)) %>% filter(amt > 100) %>% arrange(-ypc)
+knitr::kable(run_types)
+```
+
+Looks like all runs were more efficient, so the effect is still the same. Thus, I'd conclude that teams should try to avoid running up the middle on first down. It's relatively inefficient from any formation. For best results, it seems like teams should either go spread or ace, and try to run to the edges.
+
+
+## Short Yardage Runs
+
+Alright, here comes the topic that started this conversation. On 3rd/4th down, what is the most successful way to convert? Because we are looking at short yardage situations, success rate is much more important than yards per carry. We'll omit YPC from here on out in our analysis.
+
+First, let's subset only run plays on 3rd/4th down and within 2 yards.
+
+```{r}
+short_ydg_runs = run_plays %>% filter((dwn == 4 | dwn == 3) & ytg < 3)
+short_ydg_runs = short_ydg_runs[short_ydg_runs$pos1 != "K" & !grepl("Punt", short_ydg_runs$detail),]
+```
+
+Before we get into anything crazy, let's take explore the data. Below is a grid of different variables and the success rate based on those.
+
+```{r}
+g1 = ggplot(short_ydg_runs, aes(as.factor(pos1), ..count..)) + geom_bar(aes(fill = as.factor(success)), position = "dodge") + labs(title = "Position", fill = "success")
+g2 = ggplot(short_ydg_runs, aes(as.factor(shotgun), ..count..)) + geom_bar(aes(fill = as.factor(success)), position = "dodge") + labs(title = "Shotgun", fill = "success")
+g3 = ggplot(short_ydg_runs, aes(as.factor(style), ..count..)) + geom_bar(aes(fill = as.factor(success)), position = "dodge") + labs(title = "Style", fill = "success")
+g4 = ggplot(short_ydg_runs, aes(as.factor(direction), ..count..)) + geom_bar(aes(fill = as.factor(success)), position = "dodge") + labs(title = "Direction", fill = "success")
+```
+
+*Exploratory Analysis on 3rd/4th and short*
+```{r plot, echo=FALSE, fig.align='center'}
+grid.arrange(g1,g2,g3,g4,nrow = 2)
+```
+
+Overall, it's hard to discern between success rates, but we can definitely see the counts of the different variables well. Most teams elect to use a RB for short yardage, go from under center, use a spread formation, and run towards the middle.
+
+*Total success rates*
+```{r}
+short_ydg_runs %>% summarise(succ = mean(success), n = n())
+```
+
+Something else to mention: looking at the results above, last year teams converted 66% of the runs on 3rd/4th and short. That success is relatively high compared to what we saw on early downs. Teams are likely to convert first downs on 3rd/4th and short!
+
+Now for the more in depth analysis:
+
+*By Position*
+
+```{r}
+knitr::kable(short_ydg_runs %>% group_by(pos1) %>% summarise(amt = n(), succ = mean(success)) %>% arrange(-succ))
+```
+
+We're keeping QB's in this part of the analysis because many teams like to QB sneak in these situations. QB runs have a 72.4% success rate while RB's have a 65.2% success rate.
+
+*By Direction*
+```{r}
+knitr::kable(short_ydg_runs %>% group_by(direction) %>% summarise(amt = n(), succ = mean(success)) %>% arrange(-succ))
+```
+
+Whoa, here's our first relatively small surprise. Inside runs are the most attempted 3rd/4th and short runs and actually the most successful, contrary to what my girlfriend and I thought in the beginning. But this is biased towards QB runs, which we showed are more efficient. What if it's just running backs?
+
+*By Direction, non-QB*
+```{r}
+knitr::kable(short_ydg_runs %>% group_by(direction) %>% filter(pos1 != "QB") %>% summarise(amt = n(), succ = mean(success)) %>% arrange(-succ))
+```
+
+Both inside and end success rates went down (probably because there are still some QB scrambles left in the play-by-play), but again, we see running inside is the most successful with non-QB's.
+
+Alright, what about the formation style?
+
+*By Formation Style*
+```{r}
+knitr::kable(short_ydg_runs %>% group_by(style) %>% summarise(amt = n(), succ = mean(success)) %>% filter(amt > 25) %>% arrange(-succ))
+```
+
+Alright now we're starting to make some sense. Spread formations have a much better success rate (67.8%) than the rest of the formations, including jumbo, tight formations (62.8%).
+
+What if we combined both direction and formation?
+
+*Direction/Style Table*
+```{r}
+knitr::kable(short_ydg_runs %>% group_by(style, direction) %>% summarise(amt = n(), succ = mean(success)) %>% filter(amt > 50) %>% arrange(-succ))
+```
+
+Another big win for our hypothesis. Running inside works, but it's more successful when lining up with at least two WR's, thus contributing to our hypothesis that teams should spread out the defense on these situations.
+
+What if we remove QB's from this analysis?
+
+*Direction/Style, non-QB's*
+```{r}
+knitr::kable(short_ydg_runs %>% group_by(style, direction) %>% filter(pos1 != "QB") %>% summarise(amt = n(), succ = mean(success)) %>% filter(amt > 50) %>% arrange(-succ))
+```
+
+Each of these successes went down, but the biggest drop off is the difference is the "Spread, End" combination, which dropped about 5.5% taking out the 20 QB runs. This probably attests to the fact that QB scrambles or read-options are actually very efficient converting short yardage play.
+
+So while not the most inefficient play call on 3rd/4th and short, handing the ball to the running back is still one of the more frequent inefficient calls that coaches tend to do. If a coach wants a successful run but does not want a QB sneak, they should look to spread out the field with multiple wide receivers and run it up the gut or off tackle.
+
+# Conclusions
+
+1. We've shown that **outside runs on first downs** not involving the QB are much **more efficient and successful** than inside runs.
+
+2. **Shotgun** non-QB runs are more efficient than non-QB runs from under center. The most successful first down run charted was **shotgun**, **spread formation**, **tackle direction** (53.8% success rate).
+
+3. **Running up the middle in a tight formation on 3rd/4th and short** is one of the **least successful** runs to try (still works 63% of the time, though). Teams should look to spread out the field if they want to run up the middle, and be aware QB's are the most successful picking these runs up.
